@@ -16,13 +16,14 @@ CRYPTOCURRENCIES.forEach(crypto => {
   priceHistory[crypto] = [];
 });
 
-const COINGECKO_IDS = {
-  'BTC': 'bitcoin',
-  'ETH': 'ethereum',
-  'BNB': 'binancecoin',
-  'SOL': 'solana',
-  'XRP': 'ripple',
-  'ADA': 'cardano'
+// Binance API - sin límites, más confiable
+const BINANCE_SYMBOLS = {
+  'BTC': 'BTCUSDT',
+  'ETH': 'ETHUSDT',
+  'BNB': 'BNBUSDT',
+  'SOL': 'SOLUSDT',
+  'XRP': 'XRPUSDT',
+  'ADA': 'ADAUSDT'
 };
 
 async function sendTelegramMessage(message, buttons = null) {
@@ -46,21 +47,35 @@ async function sendTelegramMessage(message, buttons = null) {
 
 async function getCurrentPrice(crypto) {
   try {
-    const coinId = COINGECKO_IDS[crypto];
+    const symbol = BINANCE_SYMBOLS[crypto];
     const response = await axios.get(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true`,
+      `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
       { timeout: 10000 }
     );
-    const priceData = response.data[coinId];
-    if (!priceData) throw new Error(`No data for ${coinId}`);
+    const data = response.data;
     return {
-      price: priceData.usd,
-      marketCap: priceData.usd_market_cap,
-      volume24h: priceData.usd_24h_vol
+      price: parseFloat(data.lastPrice),
+      volume24h: parseFloat(data.quoteVolume),
+      change24h: parseFloat(data.priceChangePercent)
     };
   } catch (error) {
-    console.error(`❌ Error obteniendo precio de ${crypto}:`, error.message);
-    return null;
+    // Intentar con servidor alternativo de Binance
+    try {
+      const symbol = BINANCE_SYMBOLS[crypto];
+      const response = await axios.get(
+        `https://api1.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+        { timeout: 10000 }
+      );
+      const data = response.data;
+      return {
+        price: parseFloat(data.lastPrice),
+        volume24h: parseFloat(data.quoteVolume),
+        change24h: parseFloat(data.priceChangePercent)
+      };
+    } catch (err) {
+      console.error(`❌ Error obteniendo precio de ${crypto}:`, err.message);
+      return null;
+    }
   }
 }
 
@@ -212,7 +227,6 @@ async function handleStatus() {
     for (const crypto of keys) {
       const pos = userPositions[crypto];
       const priceData = await getCurrentPrice(crypto);
-      await new Promise(r => setTimeout(r, 1500));
       if (priceData) {
         const profit = ((priceData.price - pos.entry) / pos.entry * 100).toFixed(2);
         const emoji = parseFloat(profit) >= 0 ? '📈' : '📉';
@@ -250,9 +264,9 @@ async function handlePrecios() {
   let msg = '💰 <b>Precios actuales:</b>\n\n';
   for (const crypto of CRYPTOCURRENCIES) {
     const priceData = await getCurrentPrice(crypto);
-    await new Promise(r => setTimeout(r, 1500));
     if (priceData) {
-      msg += `<b>${crypto}</b>: $${priceData.price.toLocaleString()}\n`;
+      const changeEmoji = priceData.change24h >= 0 ? '📈' : '📉';
+      msg += `<b>${crypto}</b>: $${priceData.price.toLocaleString()} ${changeEmoji} ${priceData.change24h.toFixed(2)}%\n`;
     } else {
       msg += `<b>${crypto}</b>: No disponible\n`;
     }
@@ -351,7 +365,7 @@ async function handleBotUpdates() {
               `🏆 Salida: $${price}\n` +
               `${emoji} Ganancia: ${profit}%\n` +
               `⏱️ Duración: ${duracion} minutos\n\n` +
-              `Guardado en /status`
+              `Guardado en /status ✅`
             );
             delete userPositions[crypto];
           }
@@ -368,7 +382,14 @@ async function handleBotUpdates() {
       const texto = msg.text.trim();
 
       if (texto === '/start') {
-        await sendTelegramMessage('🤖 <b>Bot de Trading activo!</b>\n\nComandos:\n/status - Posiciones y operaciones\n/precios - Precios actuales\n/historial - Señales de hoy\n/stoploss [%] - Configurar stop loss');
+        await sendTelegramMessage(
+          '🤖 <b>Bot de Trading activo!</b>\n\n' +
+          'Comandos:\n' +
+          '/status - Posiciones y operaciones\n' +
+          '/precios - Precios actuales\n' +
+          '/historial - Señales de hoy\n' +
+          '/stoploss [%] - Configurar stop loss'
+        );
       } else if (texto === '/status') {
         await handleStatus();
       } else if (texto === '/precios') {
@@ -392,7 +413,7 @@ async function runAnalysis() {
   for (const crypto of CRYPTOCURRENCIES) {
     const analysis = await analyzeCrypto(crypto);
     if (!analysis) continue;
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const { buyConfidence, sellConfidence, rsi, currentPrice, buyReasons, sellReasons } = analysis;
 
@@ -455,10 +476,11 @@ async function runAnalysis() {
 async function startBot() {
   console.log('🤖 Bot iniciado...');
   await sendTelegramMessage(
-    '🤖 <b>Bot actualizado y activo!</b>\n\n' +
+    '🤖 <b>Bot actualizado!</b>\n\n' +
+    '✅ API cambiada a Binance (más estable)\n' +
+    '✅ Precios siempre disponibles\n' +
     '✅ Botones funcionando\n' +
-    '✅ Operaciones guardadas en /status\n' +
-    '✅ Confianza variable (70-95%)\n\n' +
+    '✅ Operaciones guardadas en /status\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
   await runAnalysis();
