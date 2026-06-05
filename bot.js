@@ -8,6 +8,9 @@ const ANALYSIS_INTERVAL = 5 * 60 * 1000;
 let userPositions = {};
 let priceHistory = {};
 let signalHistory = [];
+let executedTrades = [];
+let userStopLoss = 5;
+let lastUpdateId = 0;
 
 CRYPTOCURRENCIES.forEach(crypto => {
   priceHistory[crypto] = [];
@@ -21,8 +24,6 @@ const COINGECKO_IDS = {
   'XRP': 'ripple',
   'ADA': 'cardano'
 };
-
-let userStopLoss = 5; // % por defecto
 
 async function sendTelegramMessage(message, buttons = null) {
   try {
@@ -86,6 +87,18 @@ function calculateBollingerBands(prices, period = 20, stdDev = 2) {
   return { upper: sma + (std * stdDev), middle: sma, lower: sma - (std * stdDev) };
 }
 
+function calculateMA(prices, period) {
+  if (prices.length < period) return null;
+  return prices.slice(-period).reduce((a, b) => a + b) / period;
+}
+
+function calculateMomentum(prices, period = 10) {
+  if (prices.length < period + 1) return null;
+  const current = prices[prices.length - 1];
+  const past = prices[prices.length - 1 - period];
+  return ((current - past) / past) * 100;
+}
+
 function detectLocalExtremes(prices, window = 3) {
   if (prices.length < window * 2 + 1) return { localMax: false, localMin: false };
   const lastIndex = prices.length - 1;
@@ -130,38 +143,58 @@ async function analyzeCrypto(crypto) {
   const bb = calculateBollingerBands(prices);
   const extremes = detectLocalExtremes(prices);
   const sellPressure = analyzeSellPressure(prices);
+  const ma20 = calculateMA(prices, 20);
+  const ma50 = calculateMA(prices, 50);
+  const momentum = calculateMomentum(prices);
 
   let buyConfidence = 0, sellConfidence = 0;
+  let buyReasons = [], sellReasons = [];
 
   if (rsi !== null) {
-    if (rsi < 30) buyConfidence += 25;
-    if (rsi < 35) buyConfidence += 15;
-    if (rsi > 70) sellConfidence += 25;
-    if (rsi > 65) sellConfidence += 15;
+    if (rsi < 25) { buyConfidence += 25; buyReasons.push('RSI extremo de sobreventa'); }
+    else if (rsi < 30) { buyConfidence += 20; buyReasons.push('RSI en sobreventa'); }
+    else if (rsi < 35) { buyConfidence += 10; buyReasons.push('RSI acercándose a sobreventa'); }
+
+    if (rsi > 75) { sellConfidence += 25; sellReasons.push('RSI extremo de sobrecompra'); }
+    else if (rsi > 70) { sellConfidence += 20; sellReasons.push('RSI en sobrecompra'); }
+    else if (rsi > 65) { sellConfidence += 10; sellReasons.push('RSI acercándose a sobrecompra'); }
   }
 
   if (bb) {
-    if (currentPrice <= bb.lower * 1.02) buyConfidence += 20;
-    if (currentPrice >= bb.upper * 0.98) sellConfidence += 20;
+    if (currentPrice < bb.lower) { buyConfidence += 20; buyReasons.push('Precio bajo banda inferior'); }
+    else if (currentPrice <= bb.lower * 1.02) { buyConfidence += 12; buyReasons.push('Precio cerca banda inferior'); }
+    if (currentPrice > bb.upper) { sellConfidence += 20; sellReasons.push('Precio sobre banda superior'); }
+    else if (currentPrice >= bb.upper * 0.98) { sellConfidence += 12; sellReasons.push('Precio cerca banda superior'); }
   }
 
-  if (extremes.localMin) buyConfidence += 15;
-  if (extremes.localMax) sellConfidence += 15;
-  if (sellPressure > 5) sellConfidence += Math.min(20, sellPressure / 2);
+  if (extremes.localMin) { buyConfidence += 15; buyReasons.push('Mínimo local detectado'); }
+  if (extremes.localMax) { sellConfidence += 15; sellReasons.push('Máximo local detectado'); }
+
+  if (ma20 && ma50) {
+    if (ma20 > ma50 && currentPrice > ma20) { buyConfidence += 15; buyReasons.push('Tendencia alcista (MA20 > MA50)'); }
+    if (ma20 < ma50 && currentPrice < ma20) { sellConfidence += 15; sellReasons.push('Tendencia bajista (MA20 < MA50)'); }
+  }
+
+  if (momentum !== null) {
+    if (momentum < -3) { buyConfidence += 10; buyReasons.push('Momentum negativo (rebote posible)'); }
+    if (momentum > 3) { sellConfidence += 10; sellReasons.push('Momentum positivo alto (posible techo)'); }
+  }
+
+  if (sellPressure > 5) {
+    sellConfidence += Math.min(15, sellPressure / 2);
+    sellReasons.push('Presión bajista fuerte');
+  }
 
   return {
     crypto,
     currentPrice: currentPrice.toFixed(2),
     rsi: rsi ? rsi.toFixed(2) : 'N/A',
-    bb: bb ? {
-      upper: bb.upper.toFixed(2),
-      middle: bb.middle.toFixed(2),
-      lower: bb.lower.toFixed(2)
-    } : null,
+    bb,
     extremes,
-    sellPressure: sellPressure.toFixed(2),
     buyConfidence: Math.min(100, buyConfidence),
     sellConfidence: Math.min(100, sellConfidence),
+    buyReasons,
+    sellReasons,
     priceData
   };
 }
@@ -169,24 +202,47 @@ async function analyzeCrypto(crypto) {
 // ── COMANDOS ──────────────────────────────────────────
 
 async function handleStatus() {
+  let msg = '📊 <b>ESTADO DEL BOT</b>\n\n';
+
   const keys = Object.keys(userPositions);
   if (keys.length === 0) {
-    await sendTelegramMessage('📊 <b>Estado actual</b>\n\nNo tienes posiciones abiertas.');
-    return;
-  }
-  let msg = '📊 <b>Posiciones abiertas:</b>\n\n';
-  for (const crypto of keys) {
-    const pos = userPositions[crypto];
-    const priceData = await getCurrentPrice(crypto);
-    if (priceData) {
-      const profit = ((priceData.price - pos.entry) / pos.entry * 100).toFixed(2);
-      const emoji = profit >= 0 ? '📈' : '📉';
-      msg += `${emoji} <b>${crypto}</b>\n`;
-      msg += `   Entrada: $${pos.entry}\n`;
-      msg += `   Actual: $${priceData.price.toFixed(2)}\n`;
-      msg += `   Ganancia: ${profit}%\n\n`;
+    msg += '📂 <b>Posiciones abiertas:</b> Ninguna\n\n';
+  } else {
+    msg += '📂 <b>Posiciones abiertas:</b>\n';
+    for (const crypto of keys) {
+      const pos = userPositions[crypto];
+      const priceData = await getCurrentPrice(crypto);
+      await new Promise(r => setTimeout(r, 1500));
+      if (priceData) {
+        const profit = ((priceData.price - pos.entry) / pos.entry * 100).toFixed(2);
+        const emoji = parseFloat(profit) >= 0 ? '📈' : '📉';
+        msg += `${emoji} <b>${crypto}</b>\n`;
+        msg += `   Entrada: $${pos.entry}\n`;
+        msg += `   Actual: $${priceData.price.toFixed(2)}\n`;
+        msg += `   Ganancia: ${profit}%\n\n`;
+      }
     }
   }
+
+  if (executedTrades.length === 0) {
+    msg += '📋 <b>Operaciones ejecutadas:</b> Ninguna aún\n';
+  } else {
+    msg += '📋 <b>Últimas operaciones:</b>\n';
+    const ultimas = executedTrades.slice(-5);
+    let totalProfit = 0;
+    for (const t of ultimas) {
+      const emoji = t.profit >= 0 ? '🟢' : '🔴';
+      msg += `${emoji} <b>${t.crypto}</b>\n`;
+      msg += `   Entrada: $${t.entry} → Salida: $${t.exit}\n`;
+      msg += `   Ganancia: ${t.profit}%\n`;
+      msg += `   Duración: ${t.duracion} min\n`;
+      msg += `   🕐 ${t.time}\n\n`;
+      totalProfit += t.profit;
+    }
+    const totalEmoji = totalProfit >= 0 ? '🟢' : '🔴';
+    msg += `${totalEmoji} <b>Ganancia total: ${totalProfit.toFixed(2)}%</b>`;
+  }
+
   await sendTelegramMessage(msg);
 }
 
@@ -221,93 +277,148 @@ async function handleHistorial() {
 }
 
 async function handleStopLoss(texto) {
-  const partes = texto.trim().split(' ');
-  if (partes.length < 2 || isNaN(partes[1])) {
-    await sendTelegramMessage(
-      `⚙️ <b>Stop Loss actual: ${userStopLoss}%</b>\n\nPara cambiarlo escribe:\n<code>/stoploss 3</code>\n\nEjemplo: /stoploss 5 = alerta si baja 5%`
-    );
+  const num = parseFloat(texto);
+  if (isNaN(num)) {
+    await sendTelegramMessage(`⚙️ <b>Stop Loss actual: ${userStopLoss}%</b>\n\nPara cambiarlo:\n<code>/stoploss 3</code>`);
     return;
   }
-  const nuevo = parseFloat(partes[1]);
-  if (nuevo < 1 || nuevo > 50) {
+  if (num < 1 || num > 50) {
     await sendTelegramMessage('❌ El stop loss debe estar entre 1% y 50%');
     return;
   }
-  userStopLoss = nuevo;
-  await sendTelegramMessage(`✅ Stop Loss configurado en <b>${userStopLoss}%</b>\n\nTe avisaré si alguna posición baja más de ${userStopLoss}%`);
+  userStopLoss = num;
+  await sendTelegramMessage(`✅ Stop Loss configurado en <b>${userStopLoss}%</b>`);
 }
 
-// ── POLLING DE COMANDOS ───────────────────────────────
-
-let lastUpdateId = 0;
+// ── POLLING ───────────────────────────────────────────
 
 async function handleBotUpdates() {
   try {
     const response = await axios.get(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`,
+      { timeout: 10000 }
     );
     const updates = response.data.result;
+
     for (const update of updates) {
       lastUpdateId = update.update_id;
+
+      if (update.callback_query) {
+        const cb = update.callback_query;
+        const data = cb.data;
+
+        await axios.post(
+          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
+          { callback_query_id: cb.id }
+        );
+
+        if (data.startsWith('buy_')) {
+          const parts = data.split('_');
+          const crypto = parts[1];
+          const price = parts[2];
+          userPositions[crypto] = { entry: parseFloat(price), timestamp: Date.now() };
+          await sendTelegramMessage(
+            `✅ <b>Compra registrada - ${crypto}</b>\n\n` +
+            `💰 Entrada: $${price}\n` +
+            `🛡️ Stop Loss: ${userStopLoss}%\n\n` +
+            `Monitoreo activo. Te avisaré cuando vender.`
+          );
+
+        } else if (data.startsWith('skip_')) {
+          const crypto = data.split('_')[1];
+          await sendTelegramMessage(`❌ Señal de ${crypto} ignorada. Seguimos monitoreando.`);
+
+        } else if (data.startsWith('sell_')) {
+          const parts = data.split('_');
+          const crypto = parts[1];
+          const price = parts[2];
+          if (userPositions[crypto]) {
+            const entry = userPositions[crypto].entry;
+            const profit = ((parseFloat(price) - entry) / entry * 100).toFixed(2);
+            const duracion = Math.round((Date.now() - userPositions[crypto].timestamp) / 60000);
+            const emoji = parseFloat(profit) >= 0 ? '🟢' : '🔴';
+            executedTrades.push({
+              crypto,
+              entry,
+              exit: parseFloat(price),
+              profit: parseFloat(profit),
+              duracion,
+              time: new Date().toLocaleString()
+            });
+            await sendTelegramMessage(
+              `✅ <b>Operación ejecutada - ${crypto}</b>\n\n` +
+              `🏁 Entrada: $${entry}\n` +
+              `🏆 Salida: $${price}\n` +
+              `${emoji} Ganancia: ${profit}%\n` +
+              `⏱️ Duración: ${duracion} minutos\n\n` +
+              `Guardado en /status`
+            );
+            delete userPositions[crypto];
+          }
+
+        } else if (data.startsWith('hold_')) {
+          const crypto = data.split('_')[1];
+          await sendTelegramMessage(`⏳ Manteniendo ${crypto}. Seguimos monitoreando.`);
+        }
+        continue;
+      }
+
       const msg = update.message;
       if (!msg || !msg.text) continue;
-      const texto = msg.text.toLowerCase().trim();
-      console.log(`📩 Comando recibido: ${texto}`);
+      const texto = msg.text.trim();
 
       if (texto === '/start') {
-        await sendTelegramMessage('🤖 <b>Bot de Trading activo!</b>\n\nComandos disponibles:\n/status - Ver posiciones abiertas\n/precios - Ver precios actuales\n/historial - Ver señales de hoy\n/stoploss - Configurar stop loss');
+        await sendTelegramMessage('🤖 <b>Bot de Trading activo!</b>\n\nComandos:\n/status - Posiciones y operaciones\n/precios - Precios actuales\n/historial - Señales de hoy\n/stoploss [%] - Configurar stop loss');
       } else if (texto === '/status') {
         await handleStatus();
       } else if (texto === '/precios') {
         await handlePrecios();
       } else if (texto === '/historial') {
         await handleHistorial();
-      } else if (texto.startsWith('/stoploss')) {
-        await handleStopLoss(texto.replace('/stoploss', '').trim() ? texto : texto);
+      } else if (texto.toLowerCase().startsWith('/stoploss')) {
+        await handleStopLoss(texto.replace(/\/stoploss/i, '').trim());
       }
     }
   } catch (error) {
-    console.error('Error en updates:', error.message);
+    console.error('Error updates:', error.message);
   }
 }
 
 // ── ANÁLISIS PRINCIPAL ────────────────────────────────
 
 async function runAnalysis() {
-  console.log(`\n📊 Análisis iniciado: ${new Date().toLocaleString()}`);
+  console.log(`\n📊 Análisis: ${new Date().toLocaleString()}`);
 
   for (const crypto of CRYPTOCURRENCIES) {
     const analysis = await analyzeCrypto(crypto);
     if (!analysis) continue;
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    const { buyConfidence, sellConfidence, rsi, currentPrice } = analysis;
+    const { buyConfidence, sellConfidence, rsi, currentPrice, buyReasons, sellReasons } = analysis;
 
-    // Verificar stop loss
     if (userPositions[crypto]) {
       const entry = userPositions[crypto].entry;
       const loss = ((parseFloat(currentPrice) - entry) / entry * 100);
       if (loss <= -userStopLoss) {
         await sendTelegramMessage(
-          `🚨 <b>STOP LOSS - ${crypto}</b>\n\n💰 Precio: $${currentPrice}\n🏁 Entrada: $${entry}\n📉 Pérdida: ${loss.toFixed(2)}%\n\n⚠️ Considera vender para limitar pérdidas.`
+          `🚨 <b>STOP LOSS - ${crypto}</b>\n\n` +
+          `💰 Precio: $${currentPrice}\n` +
+          `🏁 Entrada: $${entry}\n` +
+          `📉 Pérdida: ${loss.toFixed(2)}%\n\n` +
+          `⚠️ Considera vender para limitar pérdidas.`
         );
       }
     }
 
     if (buyConfidence >= 70 && !userPositions[crypto]) {
-      const message = `
-🟢 <b>SEÑAL DE COMPRA - ${crypto}</b>
-
-💰 Precio actual: $${currentPrice}
-📊 RSI: ${rsi}
-📈 Confianza: ${buyConfidence.toFixed(0)}%
-
-<b>Análisis:</b>
-• RSI en zona de sobreventa
-• Presión de compra detectada
-• Oportunidad de entrada
-
-¿Compraste?`;
+      const reasons = buyReasons.map(r => `• ${r}`).join('\n');
+      const message =
+        `🟢 <b>SEÑAL DE COMPRA - ${crypto}</b>\n\n` +
+        `💰 Precio: $${currentPrice}\n` +
+        `📊 RSI: ${rsi}\n` +
+        `📈 Confianza: ${buyConfidence.toFixed(0)}%\n\n` +
+        `<b>Análisis:</b>\n${reasons}\n\n` +
+        `¿Compraste?`;
       const buttons = [[
         { text: '✅ Sí, compré', callback_data: `buy_${crypto}_${currentPrice}` },
         { text: '❌ Pasamos', callback_data: `skip_${crypto}` }
@@ -320,21 +431,16 @@ async function runAnalysis() {
     if (sellConfidence >= 65 && userPositions[crypto]) {
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
-      const message = `
-🔴 <b>SEÑAL DE VENTA - ${crypto}</b>
-
-💰 Precio actual: $${currentPrice}
-📊 RSI: ${rsi}
-📉 Confianza: ${sellConfidence.toFixed(0)}%
-🏁 Tu entrada: $${entry}
-📊 Ganancia: ${profit}%
-
-<b>Análisis:</b>
-• RSI en zona de sobrecompra
-• Máximo local detectado
-• Presión bajista fuerte
-
-¿Vendiste?`;
+      const reasons = sellReasons.map(r => `• ${r}`).join('\n');
+      const message =
+        `🔴 <b>SEÑAL DE VENTA - ${crypto}</b>\n\n` +
+        `💰 Precio: $${currentPrice}\n` +
+        `📊 RSI: ${rsi}\n` +
+        `📉 Confianza: ${sellConfidence.toFixed(0)}%\n` +
+        `🏁 Entrada: $${entry}\n` +
+        `📊 Ganancia: ${profit}%\n\n` +
+        `<b>Análisis:</b>\n${reasons}\n\n` +
+        `¿Vendiste?`;
       const buttons = [[
         { text: '✅ Sí, vendí', callback_data: `sell_${crypto}_${currentPrice}` },
         { text: '❌ Sigo esperando', callback_data: `hold_${crypto}` }
@@ -343,22 +449,24 @@ async function runAnalysis() {
       signalHistory.push({ type: 'SELL', crypto, price: currentPrice, confidence: sellConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
   }
-
   console.log('✅ Análisis completado');
 }
 
 async function startBot() {
-  console.log('🤖 Bot de Trading iniciado...');
-  console.log(`📊 Analizando: ${CRYPTOCURRENCIES.join(', ')}`);
-
-  await sendTelegramMessage('🤖 <b>Bot de Trading iniciado!</b>\n\nAnalizando: BTC, ETH, BNB, SOL, XRP, ADA\nRecibirás alertas cada 5 minutos.\n\nComandos:\n/status - Posiciones abiertas\n/precios - Precios actuales\n/historial - Señales de hoy\n/stoploss - Configurar stop loss');
-
+  console.log('🤖 Bot iniciado...');
+  await sendTelegramMessage(
+    '🤖 <b>Bot actualizado y activo!</b>\n\n' +
+    '✅ Botones funcionando\n' +
+    '✅ Operaciones guardadas en /status\n' +
+    '✅ Confianza variable (70-95%)\n\n' +
+    'Comandos:\n/status /precios /historial /stoploss'
+  );
   await runAnalysis();
   setInterval(runAnalysis, ANALYSIS_INTERVAL);
   setInterval(handleBotUpdates, 3000);
 }
 
 startBot().catch(error => {
-  console.error('❌ Error al iniciar bot:', error);
+  console.error('❌ Error:', error);
   process.exit(1);
 });
