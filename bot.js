@@ -16,16 +16,6 @@ CRYPTOCURRENCIES.forEach(crypto => {
   priceHistory[crypto] = [];
 });
 
-// Binance API - sin límites, más confiable
-const BINANCE_SYMBOLS = {
-  'BTC': 'BTCUSDT',
-  'ETH': 'ETHUSDT',
-  'BNB': 'BNBUSDT',
-  'SOL': 'SOLUSDT',
-  'XRP': 'XRPUSDT',
-  'ADA': 'ADAUSDT'
-};
-
 async function sendTelegramMessage(message, buttons = null) {
   try {
     const payload = {
@@ -47,33 +37,37 @@ async function sendTelegramMessage(message, buttons = null) {
 
 async function getCurrentPrice(crypto) {
   try {
-    const symbol = BINANCE_SYMBOLS[crypto];
     const response = await axios.get(
-      `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+      `https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${crypto}&tsyms=USD`,
       { timeout: 10000 }
     );
-    const data = response.data;
+    const data = response.data.RAW[crypto].USD;
     return {
-      price: parseFloat(data.lastPrice),
-      volume24h: parseFloat(data.quoteVolume),
-      change24h: parseFloat(data.priceChangePercent)
+      price: data.PRICE,
+      volume24h: data.VOLUME24HOURTO,
+      change24h: data.CHANGEPCT24HOUR
     };
-  } catch (error) {
-    // Intentar con servidor alternativo de Binance
+  } catch (e1) {
     try {
-      const symbol = BINANCE_SYMBOLS[crypto];
+      const ids = {
+        'BTC': 'btc-bitcoin',
+        'ETH': 'eth-ethereum',
+        'BNB': 'bnb-binance-coin',
+        'SOL': 'sol-solana',
+        'XRP': 'xrp-xrp',
+        'ADA': 'ada-cardano'
+      };
       const response = await axios.get(
-        `https://api1.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+        `https://api.coinpaprika.com/v1/tickers/${ids[crypto]}`,
         { timeout: 10000 }
       );
-      const data = response.data;
       return {
-        price: parseFloat(data.lastPrice),
-        volume24h: parseFloat(data.quoteVolume),
-        change24h: parseFloat(data.priceChangePercent)
+        price: parseFloat(response.data.quotes.USD.price),
+        volume24h: parseFloat(response.data.quotes.USD.volume_24h),
+        change24h: parseFloat(response.data.quotes.USD.percent_change_24h)
       };
-    } catch (err) {
-      console.error(`❌ Error obteniendo precio de ${crypto}:`, err.message);
+    } catch (e2) {
+      console.error(`❌ Error obteniendo precio de ${crypto}:`, e2.message);
       return null;
     }
   }
@@ -169,7 +163,6 @@ async function analyzeCrypto(crypto) {
     if (rsi < 25) { buyConfidence += 25; buyReasons.push('RSI extremo de sobreventa'); }
     else if (rsi < 30) { buyConfidence += 20; buyReasons.push('RSI en sobreventa'); }
     else if (rsi < 35) { buyConfidence += 10; buyReasons.push('RSI acercándose a sobreventa'); }
-
     if (rsi > 75) { sellConfidence += 25; sellReasons.push('RSI extremo de sobrecompra'); }
     else if (rsi > 70) { sellConfidence += 20; sellReasons.push('RSI en sobrecompra'); }
     else if (rsi > 65) { sellConfidence += 10; sellReasons.push('RSI acercándose a sobrecompra'); }
@@ -214,11 +207,8 @@ async function analyzeCrypto(crypto) {
   };
 }
 
-// ── COMANDOS ──────────────────────────────────────────
-
 async function handleStatus() {
   let msg = '📊 <b>ESTADO DEL BOT</b>\n\n';
-
   const keys = Object.keys(userPositions);
   if (keys.length === 0) {
     msg += '📂 <b>Posiciones abiertas:</b> Ninguna\n\n';
@@ -237,7 +227,6 @@ async function handleStatus() {
       }
     }
   }
-
   if (executedTrades.length === 0) {
     msg += '📋 <b>Operaciones ejecutadas:</b> Ninguna aún\n';
   } else {
@@ -256,7 +245,6 @@ async function handleStatus() {
     const totalEmoji = totalProfit >= 0 ? '🟢' : '🔴';
     msg += `${totalEmoji} <b>Ganancia total: ${totalProfit.toFixed(2)}%</b>`;
   }
-
   await sendTelegramMessage(msg);
 }
 
@@ -304,8 +292,6 @@ async function handleStopLoss(texto) {
   await sendTelegramMessage(`✅ Stop Loss configurado en <b>${userStopLoss}%</b>`);
 }
 
-// ── POLLING ───────────────────────────────────────────
-
 async function handleBotUpdates() {
   try {
     const response = await axios.get(
@@ -320,7 +306,6 @@ async function handleBotUpdates() {
       if (update.callback_query) {
         const cb = update.callback_query;
         const data = cb.data;
-
         await axios.post(
           `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
           { callback_query_id: cb.id }
@@ -337,11 +322,9 @@ async function handleBotUpdates() {
             `🛡️ Stop Loss: ${userStopLoss}%\n\n` +
             `Monitoreo activo. Te avisaré cuando vender.`
           );
-
         } else if (data.startsWith('skip_')) {
           const crypto = data.split('_')[1];
           await sendTelegramMessage(`❌ Señal de ${crypto} ignorada. Seguimos monitoreando.`);
-
         } else if (data.startsWith('sell_')) {
           const parts = data.split('_');
           const crypto = parts[1];
@@ -352,11 +335,8 @@ async function handleBotUpdates() {
             const duracion = Math.round((Date.now() - userPositions[crypto].timestamp) / 60000);
             const emoji = parseFloat(profit) >= 0 ? '🟢' : '🔴';
             executedTrades.push({
-              crypto,
-              entry,
-              exit: parseFloat(price),
-              profit: parseFloat(profit),
-              duracion,
+              crypto, entry, exit: parseFloat(price),
+              profit: parseFloat(profit), duracion,
               time: new Date().toLocaleString()
             });
             await sendTelegramMessage(
@@ -369,7 +349,6 @@ async function handleBotUpdates() {
             );
             delete userPositions[crypto];
           }
-
         } else if (data.startsWith('hold_')) {
           const crypto = data.split('_')[1];
           await sendTelegramMessage(`⏳ Manteniendo ${crypto}. Seguimos monitoreando.`);
@@ -404,8 +383,6 @@ async function handleBotUpdates() {
     console.error('Error updates:', error.message);
   }
 }
-
-// ── ANÁLISIS PRINCIPAL ────────────────────────────────
 
 async function runAnalysis() {
   console.log(`\n📊 Análisis: ${new Date().toLocaleString()}`);
@@ -477,7 +454,7 @@ async function startBot() {
   console.log('🤖 Bot iniciado...');
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ API cambiada a Binance (más estable)\n' +
+    '✅ API de precios mejorada\n' +
     '✅ Precios siempre disponibles\n' +
     '✅ Botones funcionando\n' +
     '✅ Operaciones guardadas en /status\n\n' +
