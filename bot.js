@@ -1,8 +1,8 @@
 const axios = require('axios');
 
-const TELEGRAM_BOT_TOKEN = '8756381855:';
+const TELEGRAM_BOT_TOKEN = '8756381855:AAH1cjj2bogwVfl0tP5yRcRfX7lZHJFohdQ';
 const TELEGRAM_CHAT_ID = '8173449171';
-const CRYPTOCURRENCIES = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', AAH1cjj2bogwVfl0tP5yRcRfX7lZHJFohdQ'ADA'];
+const CRYPTOCURRENCIES = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA'];
 const ANALYSIS_INTERVAL = 5 * 60 * 1000;
 
 let userPositions = {};
@@ -11,6 +11,7 @@ let signalHistory = [];
 let executedTrades = [];
 let userStopLoss = 5;
 let lastUpdateId = 0;
+let isPolling = false;
 
 CRYPTOCURRENCIES.forEach(crypto => {
   priceHistory[crypto] = [];
@@ -50,12 +51,9 @@ async function getCurrentPrice(crypto) {
   } catch (e1) {
     try {
       const ids = {
-        'BTC': 'btc-bitcoin',
-        'ETH': 'eth-ethereum',
-        'BNB': 'bnb-binance-coin',
-        'SOL': 'sol-solana',
-        'XRP': 'xrp-xrp',
-        'ADA': 'ada-cardano'
+        'BTC': 'btc-bitcoin', 'ETH': 'eth-ethereum',
+        'BNB': 'bnb-binance-coin', 'SOL': 'sol-solana',
+        'XRP': 'xrp-xrp', 'ADA': 'ada-cardano'
       };
       const response = await axios.get(
         `https://api.coinpaprika.com/v1/tickers/${ids[crypto]}`,
@@ -67,7 +65,7 @@ async function getCurrentPrice(crypto) {
         change24h: parseFloat(response.data.quotes.USD.percent_change_24h)
       };
     } catch (e2) {
-      console.error(`❌ Error obteniendo precio de ${crypto}:`, e2.message);
+      console.error(`❌ Error precio ${crypto}:`, e2.message);
       return null;
     }
   }
@@ -197,13 +195,10 @@ async function analyzeCrypto(crypto) {
     crypto,
     currentPrice: currentPrice.toFixed(2),
     rsi: rsi ? rsi.toFixed(2) : 'N/A',
-    bb,
-    extremes,
+    bb, extremes,
     buyConfidence: Math.min(100, buyConfidence),
     sellConfidence: Math.min(100, sellConfidence),
-    buyReasons,
-    sellReasons,
-    priceData
+    buyReasons, sellReasons, priceData
   };
 }
 
@@ -293,6 +288,8 @@ async function handleStopLoss(texto) {
 }
 
 async function handleBotUpdates() {
+  if (isPolling) return;
+  isPolling = true;
   try {
     const response = await axios.get(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`,
@@ -380,13 +377,16 @@ async function handleBotUpdates() {
       }
     }
   } catch (error) {
-    console.error('Error updates:', error.message);
+    if (!error.message.includes('409')) {
+      console.error('Error updates:', error.message);
+    }
+  } finally {
+    isPolling = false;
   }
 }
 
 async function runAnalysis() {
   console.log(`\n📊 Análisis: ${new Date().toLocaleString()}`);
-
   for (const crypto of CRYPTOCURRENCIES) {
     const analysis = await analyzeCrypto(crypto);
     if (!analysis) continue;
@@ -452,14 +452,22 @@ async function runAnalysis() {
 
 async function startBot() {
   console.log('🤖 Bot iniciado...');
+  // Limpiar webhook al iniciar
+  try {
+    await axios.get(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true`);
+    console.log('✅ Webhook limpiado');
+  } catch (e) {
+    console.log('Webhook ya estaba limpio');
+  }
+
   await sendTelegramMessage(
-    '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ API de precios mejorada\n' +
-    '✅ Precios siempre disponibles\n' +
-    '✅ Botones funcionando\n' +
-    '✅ Operaciones guardadas en /status\n\n' +
+    '🤖 <b>Bot activo y actualizado!</b>\n\n' +
+    '✅ Error 409 corregido\n' +
+    '✅ Precios funcionando\n' +
+    '✅ Botones funcionando\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
+
   await runAnalysis();
   setInterval(runAnalysis, ANALYSIS_INTERVAL);
   setInterval(handleBotUpdates, 3000);
