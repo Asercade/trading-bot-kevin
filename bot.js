@@ -1,8 +1,8 @@
 const axios = require('axios');
 
-const TELEGRAM_BOT_TOKEN = '8756381855:AAH1cjj2bogwVfl0tP5yRcRfX7lZHJFohdQ';
+const TELEGRAM_BOT_TOKEN = '8756381855:';
 const TELEGRAM_CHAT_ID = '8173449171';
-const CRYPTOCURRENCIES = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA'];
+const CRYPTOCURRENCIES = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', AAH1cjj2bogwVfl0tP5yRcRfX7lZHJFohdQ'ADA'];
 const ANALYSIS_INTERVAL = 5 * 60 * 1000;
 
 let userPositions = {};
