@@ -37,37 +37,48 @@ async function sendTelegramMessage(message, buttons = null) {
 }
 
 async function getCurrentPrice(crypto) {
+  const symbol = {
+    'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT',
+    'BNB': 'BNBUSDT', 'SOL': 'SOLUSDT',
+    'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT'
+  }[crypto];
+
+  const servers = [
+    `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+    `https://api1.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+    `https://api2.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+    `https://api3.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+    `https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${symbol}`
+  ];
+
+  for (const url of servers) {
+    try {
+      const response = await axios.get(url, { timeout: 8000 });
+      return {
+        price: parseFloat(response.data.lastPrice),
+        volume24h: parseFloat(response.data.quoteVolume),
+        change24h: parseFloat(response.data.priceChangePercent)
+      };
+    } catch (e) {
+      continue;
+    }
+  }
+
+  // Respaldo CryptoCompare si Binance falla
   try {
-    const response = await axios.get(
+    const r = await axios.get(
       `https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${crypto}&tsyms=USD`,
       { timeout: 10000 }
     );
-    const data = response.data.RAW[crypto].USD;
+    const data = r.data.RAW[crypto].USD;
     return {
       price: data.PRICE,
       volume24h: data.VOLUME24HOURTO,
       change24h: data.CHANGEPCT24HOUR
     };
-  } catch (e1) {
-    try {
-      const ids = {
-        'BTC': 'btc-bitcoin', 'ETH': 'eth-ethereum',
-        'BNB': 'bnb-binance-coin', 'SOL': 'sol-solana',
-        'XRP': 'xrp-xrp', 'ADA': 'ada-cardano'
-      };
-      const response = await axios.get(
-        `https://api.coinpaprika.com/v1/tickers/${ids[crypto]}`,
-        { timeout: 10000 }
-      );
-      return {
-        price: parseFloat(response.data.quotes.USD.price),
-        volume24h: parseFloat(response.data.quotes.USD.volume_24h),
-        change24h: parseFloat(response.data.quotes.USD.percent_change_24h)
-      };
-    } catch (e2) {
-      console.error(`❌ Error precio ${crypto}:`, e2.message);
-      return null;
-    }
+  } catch (e) {
+    console.error(`❌ Error precio ${crypto}:`, e.message);
+    return null;
   }
 }
 
@@ -439,7 +450,6 @@ async function runAnalysis() {
       }
     }
 
-    // Solo manda señal de COMPRA si NO hay posición abierta
     if (buyConfidence >= 30 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
@@ -455,11 +465,9 @@ async function runAnalysis() {
         { text: '❌ Pasamos', callback_data: `skip_${crypto}` }
       ]];
       await sendTelegramMessage(message, buttons);
-      // ✅ NO se registra posición aquí - solo cuando presionas "Sí, compré"
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
 
-    // Solo manda señal de VENTA si HAY posición abierta
     if (sellConfidence >= 30 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
@@ -496,14 +504,9 @@ async function startBot() {
 
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ Fix: señales de venta solo si compraste\n' +
-    '✅ Señales desde 30% de confianza\n' +
-    '⚠️ 30-49% Muy Baja\n' +
-    '⚪ 50-69% Baja\n' +
-    '🟡 70-79% Moderada\n' +
-    '🟠 80-89% Buena\n' +
-    '🔴 90-99% Fuerte\n' +
-    '🚀 100% Perfecta\n\n' +
+    '✅ API Binance activada\n' +
+    '✅ Señales de venta solo si compraste\n' +
+    '✅ Señales desde 30% de confianza\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
 
