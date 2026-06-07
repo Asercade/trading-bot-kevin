@@ -140,7 +140,8 @@ function getSignalLevel(confidence) {
   if (confidence >= 100) return { emoji: '🚀', nivel: 'PERFECTA' };
   if (confidence >= 90) return { emoji: '🔴', nivel: 'FUERTE' };
   if (confidence >= 80) return { emoji: '🟠', nivel: 'BUENA' };
-  return { emoji: '🟡', nivel: 'MODERADA' };
+  if (confidence >= 70) return { emoji: '🟡', nivel: 'MODERADA' };
+  return { emoji: '⚪', nivel: 'DÉBIL' };
 }
 
 async function analyzeCrypto(crypto) {
@@ -415,8 +416,7 @@ async function runAnalysis() {
       }
     }
 
-    // 4 niveles de señal: 70-79, 80-89, 90-99, 100
-    if (buyConfidence >= 70 && !userPositions[crypto]) {
+    if (buyConfidence >= 50 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
       const message =
@@ -435,7 +435,7 @@ async function runAnalysis() {
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
 
-    if (sellConfidence >= 65 && userPositions[crypto]) {
+    if (sellConfidence >= 50 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
@@ -471,7 +471,8 @@ async function startBot() {
 
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ 4 niveles de señal:\n' +
+    '✅ Señales desde 50% de confianza\n' +
+    '⚪ 50-69% Débil\n' +
     '🟡 70-79% Moderada\n' +
     '🟠 80-89% Buena\n' +
     '🔴 90-99% Fuerte\n' +
