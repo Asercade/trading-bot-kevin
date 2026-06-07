@@ -64,7 +64,6 @@ async function getCurrentPrice(crypto) {
     }
   }
 
-  // Respaldo CryptoCompare si Binance falla
   try {
     const r = await axios.get(
       `https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${crypto}&tsyms=USD`,
@@ -148,14 +147,44 @@ function analyzeSellPressure(prices) {
 }
 
 function detectPriceTrend(prices) {
-  if (prices.length < 4) return { uptrend: false, downtrend: false, changePercent: 0 };
-  const last = prices[prices.length - 1];
-  const prev3 = prices[prices.length - 4];
-  const changePercent = ((last - prev3) / prev3) * 100;
+  if (prices.length < 2) return { uptrend: false, downtrend: false, changePercent: 0, strength: 0 };
+  
+  const current = prices[prices.length - 1];
+  const prev1 = prices[prices.length - 2]; // hace 5 min
+  const prev3 = prices.length >= 4 ? prices[prices.length - 4] : prev1; // hace 15 min
+
+  // Cambio en 5 minutos
+  const change5min = ((current - prev1) / prev1) * 100;
+  // Cambio en 15 minutos
+  const change15min = ((current - prev3) / prev3) * 100;
+
+  // Puntos por tendencia alcista
+  let buyStrength = 0;
+  let sellStrength = 0;
+  let buyDesc = '';
+  let sellDesc = '';
+
+  if (change5min >= 3) { buyStrength = 50; buyDesc = `Subió ${change5min.toFixed(2)}% en 5 min 🚀`; }
+  else if (change5min >= 2) { buyStrength = 35; buyDesc = `Subió ${change5min.toFixed(2)}% en 5 min`; }
+  else if (change5min >= 1) { buyStrength = 25; buyDesc = `Subió ${change5min.toFixed(2)}% en 5 min`; }
+  else if (change5min >= 0.3) { buyStrength = 15; buyDesc = `Subió ${change5min.toFixed(2)}% en 5 min`; }
+  else if (change15min >= 0.3) { buyStrength = 15; buyDesc = `Subió ${change15min.toFixed(2)}% en 15 min`; }
+
+  if (change5min <= -3) { sellStrength = 50; sellDesc = `Bajó ${Math.abs(change5min).toFixed(2)}% en 5 min 🔻`; }
+  else if (change5min <= -2) { sellStrength = 35; sellDesc = `Bajó ${Math.abs(change5min).toFixed(2)}% en 5 min`; }
+  else if (change5min <= -1) { sellStrength = 25; sellDesc = `Bajó ${Math.abs(change5min).toFixed(2)}% en 5 min`; }
+  else if (change5min <= -0.3) { sellStrength = 15; sellDesc = `Bajó ${Math.abs(change5min).toFixed(2)}% en 5 min`; }
+  else if (change15min <= -0.3) { sellStrength = 15; sellDesc = `Bajó ${Math.abs(change15min).toFixed(2)}% en 15 min`; }
+
   return {
-    uptrend: changePercent > 0.3,
-    downtrend: changePercent < -0.3,
-    changePercent: parseFloat(changePercent.toFixed(3))
+    uptrend: buyStrength > 0,
+    downtrend: sellStrength > 0,
+    buyStrength,
+    sellStrength,
+    buyDesc,
+    sellDesc,
+    change5min: parseFloat(change5min.toFixed(3)),
+    change15min: parseFloat(change15min.toFixed(3))
   };
 }
 
@@ -190,13 +219,14 @@ async function analyzeCrypto(crypto) {
   let buyConfidence = 0, sellConfidence = 0;
   let buyReasons = [], sellReasons = [];
 
+  // Tendencia de precio con puntos variables según velocidad
   if (trend.uptrend) {
-    buyConfidence += 30;
-    buyReasons.push(`Precio subió ${trend.changePercent}% en últimos 15 min`);
+    buyConfidence += trend.buyStrength;
+    buyReasons.push(trend.buyDesc);
   }
   if (trend.downtrend) {
-    sellConfidence += 30;
-    sellReasons.push(`Precio bajó ${Math.abs(trend.changePercent)}% en últimos 15 min`);
+    sellConfidence += trend.sellStrength;
+    sellReasons.push(trend.sellDesc);
   }
 
   if (rsi !== null) {
@@ -450,7 +480,7 @@ async function runAnalysis() {
       }
     }
 
-    if (buyConfidence >= 30 && !userPositions[crypto]) {
+    if (buyConfidence >= 15 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
       const message =
@@ -468,7 +498,7 @@ async function runAnalysis() {
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
 
-    if (sellConfidence >= 30 && userPositions[crypto]) {
+    if (sellConfidence >= 15 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
@@ -504,9 +534,12 @@ async function startBot() {
 
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ API Binance activada\n' +
-    '✅ Señales de venta solo si compraste\n' +
-    '✅ Señales desde 30% de confianza\n\n' +
+    '✅ Señales inmediatas por velocidad de precio\n' +
+    '✅ 0.3%+ en 5min → señal MUY BAJA\n' +
+    '✅ 1%+ en 5min → señal BAJA\n' +
+    '✅ 2%+ en 5min → señal BUENA\n' +
+    '✅ 3%+ en 5min → señal FUERTE\n' +
+    '✅ RSI + Bollinger + MA incluidos\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
 
