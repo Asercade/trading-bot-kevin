@@ -136,15 +136,14 @@ function analyzeSellPressure(prices) {
   return 0;
 }
 
-// Detectar tendencia de precio en últimos 3 análisis
 function detectPriceTrend(prices) {
   if (prices.length < 4) return { uptrend: false, downtrend: false, changePercent: 0 };
   const last = prices[prices.length - 1];
   const prev3 = prices[prices.length - 4];
   const changePercent = ((last - prev3) / prev3) * 100;
   return {
-    uptrend: changePercent > 0.3,   // subió más de 0.3%
-    downtrend: changePercent < -0.3, // bajó más de 0.3%
+    uptrend: changePercent > 0.3,
+    downtrend: changePercent < -0.3,
     changePercent: parseFloat(changePercent.toFixed(3))
   };
 }
@@ -180,7 +179,6 @@ async function analyzeCrypto(crypto) {
   let buyConfidence = 0, sellConfidence = 0;
   let buyReasons = [], sellReasons = [];
 
-  // Indicador de tendencia de precio (NUEVO)
   if (trend.uptrend) {
     buyConfidence += 30;
     buyReasons.push(`Precio subió ${trend.changePercent}% en últimos 15 min`);
@@ -441,6 +439,7 @@ async function runAnalysis() {
       }
     }
 
+    // Solo manda señal de COMPRA si NO hay posición abierta
     if (buyConfidence >= 30 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
@@ -456,10 +455,11 @@ async function runAnalysis() {
         { text: '❌ Pasamos', callback_data: `skip_${crypto}` }
       ]];
       await sendTelegramMessage(message, buttons);
-      userPositions[crypto] = { entry: parseFloat(currentPrice), timestamp: Date.now() };
+      // ✅ NO se registra posición aquí - solo cuando presionas "Sí, compré"
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
 
+    // Solo manda señal de VENTA si HAY posición abierta
     if (sellConfidence >= 30 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
@@ -496,7 +496,8 @@ async function startBot() {
 
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ Señales desde 30% con tendencia de precio\n' +
+    '✅ Fix: señales de venta solo si compraste\n' +
+    '✅ Señales desde 30% de confianza\n' +
     '⚠️ 30-49% Muy Baja\n' +
     '⚪ 50-69% Baja\n' +
     '🟡 70-79% Moderada\n' +
