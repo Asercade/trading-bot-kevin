@@ -136,12 +136,26 @@ function analyzeSellPressure(prices) {
   return 0;
 }
 
+// Detectar tendencia de precio en últimos 3 análisis
+function detectPriceTrend(prices) {
+  if (prices.length < 4) return { uptrend: false, downtrend: false, changePercent: 0 };
+  const last = prices[prices.length - 1];
+  const prev3 = prices[prices.length - 4];
+  const changePercent = ((last - prev3) / prev3) * 100;
+  return {
+    uptrend: changePercent > 0.3,   // subió más de 0.3%
+    downtrend: changePercent < -0.3, // bajó más de 0.3%
+    changePercent: parseFloat(changePercent.toFixed(3))
+  };
+}
+
 function getSignalLevel(confidence) {
   if (confidence >= 100) return { emoji: '🚀', nivel: 'PERFECTA' };
   if (confidence >= 90) return { emoji: '🔴', nivel: 'FUERTE' };
   if (confidence >= 80) return { emoji: '🟠', nivel: 'BUENA' };
   if (confidence >= 70) return { emoji: '🟡', nivel: 'MODERADA' };
-  return { emoji: '⚪', nivel: 'DÉBIL' };
+  if (confidence >= 50) return { emoji: '⚪', nivel: 'BAJA' };
+  return { emoji: '⚠️', nivel: 'MUY BAJA' };
 }
 
 async function analyzeCrypto(crypto) {
@@ -161,9 +175,20 @@ async function analyzeCrypto(crypto) {
   const ma20 = calculateMA(prices, 20);
   const ma50 = calculateMA(prices, 50);
   const momentum = calculateMomentum(prices);
+  const trend = detectPriceTrend(prices);
 
   let buyConfidence = 0, sellConfidence = 0;
   let buyReasons = [], sellReasons = [];
+
+  // Indicador de tendencia de precio (NUEVO)
+  if (trend.uptrend) {
+    buyConfidence += 30;
+    buyReasons.push(`Precio subió ${trend.changePercent}% en últimos 15 min`);
+  }
+  if (trend.downtrend) {
+    sellConfidence += 30;
+    sellReasons.push(`Precio bajó ${Math.abs(trend.changePercent)}% en últimos 15 min`);
+  }
 
   if (rsi !== null) {
     if (rsi < 25) { buyConfidence += 25; buyReasons.push('RSI extremo de sobreventa'); }
@@ -203,7 +228,7 @@ async function analyzeCrypto(crypto) {
     crypto,
     currentPrice: currentPrice.toFixed(2),
     rsi: rsi ? rsi.toFixed(2) : 'N/A',
-    bb, extremes,
+    bb, extremes, trend,
     buyConfidence: Math.min(100, buyConfidence),
     sellConfidence: Math.min(100, sellConfidence),
     buyReasons, sellReasons, priceData
@@ -416,7 +441,7 @@ async function runAnalysis() {
       }
     }
 
-    if (buyConfidence >= 50 && !userPositions[crypto]) {
+    if (buyConfidence >= 30 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
       const message =
@@ -435,7 +460,7 @@ async function runAnalysis() {
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
 
-    if (sellConfidence >= 50 && userPositions[crypto]) {
+    if (sellConfidence >= 30 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
@@ -471,8 +496,9 @@ async function startBot() {
 
   await sendTelegramMessage(
     '🤖 <b>Bot actualizado!</b>\n\n' +
-    '✅ Señales desde 50% de confianza\n' +
-    '⚪ 50-69% Débil\n' +
+    '✅ Señales desde 30% con tendencia de precio\n' +
+    '⚠️ 30-49% Muy Baja\n' +
+    '⚪ 50-69% Baja\n' +
     '🟡 70-79% Moderada\n' +
     '🟠 80-89% Buena\n' +
     '🔴 90-99% Fuerte\n' +
