@@ -136,6 +136,13 @@ function analyzeSellPressure(prices) {
   return 0;
 }
 
+function getSignalLevel(confidence) {
+  if (confidence >= 100) return { emoji: '🚀', nivel: 'PERFECTA' };
+  if (confidence >= 90) return { emoji: '🔴', nivel: 'FUERTE' };
+  if (confidence >= 80) return { emoji: '🟠', nivel: 'BUENA' };
+  return { emoji: '🟡', nivel: 'MODERADA' };
+}
+
 async function analyzeCrypto(crypto) {
   const priceData = await getCurrentPrice(crypto);
   if (!priceData) return null;
@@ -408,10 +415,12 @@ async function runAnalysis() {
       }
     }
 
+    // 4 niveles de señal: 70-79, 80-89, 90-99, 100
     if (buyConfidence >= 70 && !userPositions[crypto]) {
+      const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
       const message =
-        `🟢 <b>SEÑAL DE COMPRA - ${crypto}</b>\n\n` +
+        `🟢 <b>SEÑAL DE COMPRA ${level.emoji} ${level.nivel} - ${crypto}</b>\n\n` +
         `💰 Precio: $${currentPrice}\n` +
         `📊 RSI: ${rsi}\n` +
         `📈 Confianza: ${buyConfidence.toFixed(0)}%\n\n` +
@@ -427,11 +436,12 @@ async function runAnalysis() {
     }
 
     if (sellConfidence >= 65 && userPositions[crypto]) {
+      const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
       const reasons = sellReasons.map(r => `• ${r}`).join('\n');
       const message =
-        `🔴 <b>SEÑAL DE VENTA - ${crypto}</b>\n\n` +
+        `🔴 <b>SEÑAL DE VENTA ${level.emoji} ${level.nivel} - ${crypto}</b>\n\n` +
         `💰 Precio: $${currentPrice}\n` +
         `📊 RSI: ${rsi}\n` +
         `📉 Confianza: ${sellConfidence.toFixed(0)}%\n` +
@@ -452,7 +462,6 @@ async function runAnalysis() {
 
 async function startBot() {
   console.log('🤖 Bot iniciado...');
-  // Limpiar webhook al iniciar
   try {
     await axios.get(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true`);
     console.log('✅ Webhook limpiado');
@@ -461,10 +470,12 @@ async function startBot() {
   }
 
   await sendTelegramMessage(
-    '🤖 <b>Bot activo y actualizado!</b>\n\n' +
-    '✅ Error 409 corregido\n' +
-    '✅ Precios funcionando\n' +
-    '✅ Botones funcionando\n\n' +
+    '🤖 <b>Bot actualizado!</b>\n\n' +
+    '✅ 4 niveles de señal:\n' +
+    '🟡 70-79% Moderada\n' +
+    '🟠 80-89% Buena\n' +
+    '🔴 90-99% Fuerte\n' +
+    '🚀 100% Perfecta\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
 
