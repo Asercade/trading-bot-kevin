@@ -4,7 +4,7 @@ const xml2js = require('xml2js');
 const TELEGRAM_BOT_TOKEN = '8756381855:AAH1cjj2bogwVfl0tP5yRcRfX7lZHJFohdQ';
 const TELEGRAM_CHAT_ID = '8173449171';
 const CRYPTOCURRENCIES = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA'];
-const ANALYSIS_INTERVAL = 60 * 1000; // 1 minuto
+const ANALYSIS_INTERVAL = 60 * 1000;
 
 let userPositions = {};
 let priceHistory = {};
@@ -14,7 +14,7 @@ let executedTrades = [];
 let userStopLoss = 5;
 let lastUpdateId = 0;
 let isPolling = false;
-let priceBase = {}; // Base acumulativa por crypto
+let priceBase = {};
 let lastNewsCheck = 0;
 let cachedNews = {};
 
@@ -100,23 +100,19 @@ async function getCurrentPrice(crypto) {
   }
 }
 
-// Detectar ballenas via volumen de Binance
 function detectWhale(crypto, currentVolume) {
   if (volumeHistory[crypto].length < 5) return { isWhale: false, strength: 0, desc: '' };
-  
   const avgVolume = volumeHistory[crypto].slice(-5).reduce((a, b) => a + b) / 5;
   const volumeIncrease = ((currentVolume - avgVolume) / avgVolume) * 100;
-
   if (volumeIncrease >= 500) return { isWhale: true, strength: 40, desc: `🐋 Ballena enorme! Volumen +${volumeIncrease.toFixed(0)}%` };
   if (volumeIncrease >= 300) return { isWhale: true, strength: 30, desc: `🐋 Ballena grande! Volumen +${volumeIncrease.toFixed(0)}%` };
   if (volumeIncrease >= 150) return { isWhale: true, strength: 15, desc: `🐳 Movimiento grande. Volumen +${volumeIncrease.toFixed(0)}%` };
   return { isWhale: false, strength: 0, desc: '' };
 }
 
-// Obtener noticias de RSS
 async function fetchNews() {
   const now = Date.now();
-  if (now - lastNewsCheck < 10 * 60 * 1000) return; // cada 10 minutos
+  if (now - lastNewsCheck < 10 * 60 * 1000) return;
   lastNewsCheck = now;
 
   const feeds = [
@@ -127,7 +123,6 @@ async function fetchNews() {
   const positiveWords = ['surge', 'rally', 'bullish', 'adoption', 'approved', 'partnership', 'growth', 'record', 'high', 'gain', 'rises', 'jumps', 'soars', 'up', 'buy'];
   const negativeWords = ['crash', 'bearish', 'ban', 'hack', 'fraud', 'dump', 'fall', 'drop', 'down', 'sell', 'fear', 'risk', 'warning', 'loss'];
 
-  // Reset noticias
   CRYPTOCURRENCIES.forEach(crypto => {
     cachedNews[crypto] = { positive: 0, negative: 0, headlines: [] };
   });
@@ -149,7 +144,6 @@ async function fetchNews() {
           if (keywords.some(kw => content.includes(kw))) {
             const posScore = positiveWords.filter(w => content.includes(w)).length;
             const negScore = negativeWords.filter(w => content.includes(w)).length;
-            
             if (posScore > negScore) {
               cachedNews[crypto].positive += posScore;
               if (cachedNews[crypto].headlines.length < 2) {
@@ -232,7 +226,6 @@ function analyzeSellPressure(prices) {
   return 0;
 }
 
-// Calcular % acumulado desde base
 function getAccumulatedChange(crypto, currentPrice) {
   if (!priceBase[crypto]) {
     priceBase[crypto] = currentPrice;
@@ -245,9 +238,7 @@ function getSignalLevel(confidence) {
   if (confidence >= 100) return { emoji: '🚀', nivel: 'PERFECTA' };
   if (confidence >= 90) return { emoji: '🔴', nivel: 'FUERTE' };
   if (confidence >= 80) return { emoji: '🟠', nivel: 'BUENA' };
-  if (confidence >= 70) return { emoji: '🟡', nivel: 'MODERADA' };
-  if (confidence >= 60) return { emoji: '🔵', nivel: 'ACEPTABLE' };
-  return { emoji: '⚪', nivel: 'BAJA' };
+  return { emoji: '🟡', nivel: 'MODERADA' };
 }
 
 async function analyzeCrypto(crypto) {
@@ -256,7 +247,6 @@ async function analyzeCrypto(crypto) {
   const currentPrice = priceData.price;
   const currentVolume = priceData.volume;
 
-  // Guardar historial
   priceHistory[crypto].push(currentPrice);
   if (priceHistory[crypto].length > 100) priceHistory[crypto].shift();
   volumeHistory[crypto].push(currentVolume);
@@ -277,7 +267,6 @@ async function analyzeCrypto(crypto) {
   let buyConfidence = 0, sellConfidence = 0;
   let buyReasons = [], sellReasons = [];
 
-  // Cambio acumulativo de precio
   if (accumulatedChange >= 3) { buyConfidence += 40; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado 🚀`); }
   else if (accumulatedChange >= 2) { buyConfidence += 30; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado`); }
   else if (accumulatedChange >= 1) { buyConfidence += 20; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado`); }
@@ -288,18 +277,11 @@ async function analyzeCrypto(crypto) {
   else if (accumulatedChange <= -1) { sellConfidence += 20; sellReasons.push(`Bajó ${Math.abs(accumulatedChange).toFixed(2)}% acumulado`); }
   else if (accumulatedChange <= -0.3) { sellConfidence += 10; sellReasons.push(`Bajó ${Math.abs(accumulatedChange).toFixed(2)}% acumulado`); priceBase[crypto] = currentPrice; }
 
-  // Ballenas
   if (whale.isWhale) {
-    if (accumulatedChange >= 0) {
-      buyConfidence += whale.strength;
-      buyReasons.push(whale.desc);
-    } else {
-      sellConfidence += whale.strength;
-      sellReasons.push(whale.desc);
-    }
+    if (accumulatedChange >= 0) { buyConfidence += whale.strength; buyReasons.push(whale.desc); }
+    else { sellConfidence += whale.strength; sellReasons.push(whale.desc); }
   }
 
-  // RSI
   if (rsi !== null) {
     if (rsi < 25) { buyConfidence += 25; buyReasons.push('RSI extremo de sobreventa'); }
     else if (rsi < 30) { buyConfidence += 20; buyReasons.push('RSI en sobreventa'); }
@@ -309,7 +291,6 @@ async function analyzeCrypto(crypto) {
     else if (rsi > 65) { sellConfidence += 10; sellReasons.push('RSI acercándose a sobrecompra'); }
   }
 
-  // Bollinger
   if (bb) {
     if (currentPrice < bb.lower) { buyConfidence += 20; buyReasons.push('Precio bajo banda inferior'); }
     else if (currentPrice <= bb.lower * 1.02) { buyConfidence += 12; buyReasons.push('Precio cerca banda inferior'); }
@@ -317,43 +298,28 @@ async function analyzeCrypto(crypto) {
     else if (currentPrice >= bb.upper * 0.98) { sellConfidence += 12; sellReasons.push('Precio cerca banda superior'); }
   }
 
-  // Extremos locales
   if (extremes.localMin) { buyConfidence += 15; buyReasons.push('Mínimo local detectado'); }
   if (extremes.localMax) { sellConfidence += 15; sellReasons.push('Máximo local detectado'); }
 
-  // Medias móviles
   if (ma20 && ma50) {
     if (ma20 > ma50 && currentPrice > ma20) { buyConfidence += 15; buyReasons.push('Tendencia alcista (MA20 > MA50)'); }
     if (ma20 < ma50 && currentPrice < ma20) { sellConfidence += 15; sellReasons.push('Tendencia bajista (MA20 < MA50)'); }
   }
 
-  // Momentum
   if (momentum !== null) {
     if (momentum < -3) { buyConfidence += 10; buyReasons.push('Momentum negativo (rebote posible)'); }
     if (momentum > 3) { sellConfidence += 10; sellReasons.push('Momentum alto (posible techo)'); }
   }
 
-  // Presión de venta
   if (sellPressure > 5) {
     sellConfidence += Math.min(15, sellPressure / 2);
     sellReasons.push('Presión bajista detectada');
   }
 
-  // Noticias
-  if (news.positive >= 2) {
-    buyConfidence += 20;
-    buyReasons.push(...news.headlines);
-  } else if (news.positive >= 1) {
-    buyConfidence += 10;
-    buyReasons.push(...news.headlines);
-  }
-  if (news.negative >= 2) {
-    sellConfidence += 20;
-    sellReasons.push('📰 Noticias negativas detectadas');
-  } else if (news.negative >= 1) {
-    sellConfidence += 10;
-    sellReasons.push('📰 Noticia negativa detectada');
-  }
+  if (news.positive >= 2) { buyConfidence += 20; buyReasons.push(...news.headlines); }
+  else if (news.positive >= 1) { buyConfidence += 10; buyReasons.push(...news.headlines); }
+  if (news.negative >= 2) { sellConfidence += 20; sellReasons.push('📰 Noticias negativas detectadas'); }
+  else if (news.negative >= 1) { sellConfidence += 10; sellReasons.push('📰 Noticia negativa detectada'); }
 
   return {
     crypto,
@@ -479,7 +445,7 @@ async function handleBotUpdates() {
           const crypto = parts[1];
           const price = parts[2];
           userPositions[crypto] = { entry: parseFloat(price), timestamp: Date.now() };
-          priceBase[crypto] = parseFloat(price); // Reset base al comprar
+          priceBase[crypto] = parseFloat(price);
           await sendTelegramMessage(
             `✅ <b>Compra registrada - ${crypto}</b>\n\n` +
             `💰 Entrada: $${price}\n` +
@@ -488,7 +454,7 @@ async function handleBotUpdates() {
           );
         } else if (data.startsWith('skip_')) {
           const crypto = data.split('_')[1];
-          priceBase[crypto] = null; // Reset base si ignoras
+          priceBase[crypto] = null;
           await sendTelegramMessage(`❌ Señal de ${crypto} ignorada. Seguimos monitoreando.`);
         } else if (data.startsWith('sell_')) {
           const parts = data.split('_');
@@ -513,7 +479,7 @@ async function handleBotUpdates() {
               `Guardado en /status ✅`
             );
             delete userPositions[crypto];
-            priceBase[crypto] = null; // Reset base al vender
+            priceBase[crypto] = null;
           }
         } else if (data.startsWith('hold_')) {
           const crypto = data.split('_')[1];
@@ -556,7 +522,6 @@ async function handleBotUpdates() {
 
 async function runAnalysis() {
   console.log(`\n📊 Análisis: ${new Date().toLocaleString()}`);
-
   await fetchNews();
 
   for (const crypto of CRYPTOCURRENCIES) {
@@ -565,7 +530,6 @@ async function runAnalysis() {
 
     const { buyConfidence, sellConfidence, rsi, currentPrice, buyReasons, sellReasons, accumulatedChange } = analysis;
 
-    // Stop loss check
     if (userPositions[crypto]) {
       const entry = userPositions[crypto].entry;
       const loss = ((parseFloat(currentPrice) - entry) / entry * 100);
@@ -580,7 +544,7 @@ async function runAnalysis() {
       }
     }
 
-    if (buyConfidence >= 50 && !userPositions[crypto]) {
+    if (buyConfidence >= 70 && !userPositions[crypto]) {
       const level = getSignalLevel(buyConfidence);
       const reasons = buyReasons.map(r => `• ${r}`).join('\n');
       const message =
@@ -597,10 +561,10 @@ async function runAnalysis() {
       ]];
       await sendTelegramMessage(message, buttons);
       signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
-      priceBase[crypto] = parseFloat(currentPrice); // Reset base al mandar señal
+      priceBase[crypto] = parseFloat(currentPrice);
     }
 
-    if (sellConfidence >= 50 && userPositions[crypto]) {
+    if (sellConfidence >= 70 && userPositions[crypto]) {
       const level = getSignalLevel(sellConfidence);
       const entry = userPositions[crypto].entry;
       const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
@@ -635,14 +599,16 @@ async function startBot() {
   }
 
   await sendTelegramMessage(
-    '🤖 <b>Bot actualizado - Versión Pro!</b>\n\n' +
+    '🤖 <b>Bot actualizado!</b>\n\n' +
+    '✅ Solo señales 70%+ (Moderada a Perfecta)\n' +
     '✅ Análisis cada 1 minuto\n' +
-    '✅ Precio acumulativo (no se reinicia)\n' +
-    '✅ Detección de ballenas via volumen\n' +
-    '✅ Noticias CoinDesk + CoinTelegraph\n' +
-    '✅ RSI + Bollinger + MA + Momentum\n' +
-    '✅ Solo señales 50%+\n' +
-    '✅ Cada crypto independiente\n\n' +
+    '✅ Precio acumulativo\n' +
+    '✅ Ballenas + Noticias + RSI\n\n' +
+    'Niveles:\n' +
+    '🟡 70-79% Moderada\n' +
+    '🟠 80-89% Buena\n' +
+    '🔴 90-99% Fuerte\n' +
+    '🚀 100% Perfecta\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
 
