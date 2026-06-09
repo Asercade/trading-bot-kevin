@@ -534,12 +534,17 @@ async function runAnalysis() {
       const entry = userPositions[crypto].entry;
       const loss = ((parseFloat(currentPrice) - entry) / entry * 100);
       if (loss <= -userStopLoss) {
+        const slButtons = [[
+          { text: '✅ Sí, vendí', callback_data: `sell_${crypto}_${currentPrice}` },
+          { text: '❌ Sigo esperando', callback_data: `hold_${crypto}` }
+        ]];
         await sendTelegramMessage(
           `🚨 <b>STOP LOSS - ${crypto}</b>\n\n` +
           `💰 Precio: $${currentPrice}\n` +
           `🏁 Entrada: $${entry}\n` +
           `📉 Pérdida: ${loss.toFixed(2)}%\n\n` +
-          `⚠️ Considera vender para limitar pérdidas.`
+          `⚠️ Considera vender para limitar pérdidas.`,
+          slButtons
         );
       }
     }
