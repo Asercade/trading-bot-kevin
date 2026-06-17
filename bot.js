@@ -18,7 +18,7 @@ let isPolling = false;
 let priceBase = {};
 let lastNewsCheck = 0;
 let cachedNews = {};
-let pendingSignals = {}; // Para confirmaciones múltiples
+let pendingSignals = {};
 
 CRYPTOCURRENCIES.forEach(crypto => {
   priceHistory[crypto] = [];
@@ -26,7 +26,7 @@ CRYPTOCURRENCIES.forEach(crypto => {
   rsiHistory[crypto] = [];
   priceBase[crypto] = null;
   cachedNews[crypto] = { positive: 0, negative: 0, headlines: [] };
-  pendingSignals[crypto] = { buyCount: 0, sellCount: 0, lastBuyConfidence: 0, lastSellConfidence: 0 };
+  pendingSignals[crypto] = { buyCount: 0, lastBuyConfidence: 0 };
 });
 
 const BINANCE_SYMBOLS = {
@@ -100,7 +100,6 @@ async function getCurrentPrice(crypto) {
   }
 }
 
-// ── 1. DETECCIÓN DE CAÍDA INMINENTE ──────────────────
 async function detectImmediateDrop(crypto) {
   try {
     const symbol = BINANCE_SYMBOLS[crypto];
@@ -110,27 +109,20 @@ async function detectImmediateDrop(crypto) {
     );
     const bids = r.data.bids;
     const asks = r.data.asks;
-
     const totalBids = bids.reduce((s, b) => s + parseFloat(b[0]) * parseFloat(b[1]), 0);
     const totalAsks = asks.reduce((s, a) => s + parseFloat(a[0]) * parseFloat(a[1]), 0);
     const ratio = totalBids / (totalBids + totalAsks);
-
-    // Detectar pared de venta masiva
     const bigAskWall = asks.some(a => parseFloat(a[1]) * parseFloat(a[0]) > totalBids * 0.3);
-
     return {
       dropRisk: ratio < 0.35 || bigAskWall,
       ratio,
-      totalBids: (totalBids / 1000).toFixed(0) + 'K',
-      totalAsks: (totalAsks / 1000).toFixed(0) + 'K',
       buyRatio: (ratio * 100).toFixed(0)
     };
   } catch (e) {
-    return { dropRisk: false, ratio: 0.5, totalBids: '0', totalAsks: '0', buyRatio: '50' };
+    return { dropRisk: false, ratio: 0.5, buyRatio: '50' };
   }
 }
 
-// ── 2. ANÁLISIS ORDER BOOK + ZONAS TP/SL ─────────────
 async function analyzeOrderBookZones(crypto, currentPrice) {
   try {
     const symbol = BINANCE_SYMBOLS[crypto];
@@ -141,14 +133,12 @@ async function analyzeOrderBookZones(crypto, currentPrice) {
     const bids = r.data.bids;
     const asks = r.data.asks;
 
-    // Encontrar zona de soporte más fuerte (mayor volumen en bids)
     let maxBidVol = 0, supportZone = 0;
     for (const b of bids) {
       const vol = parseFloat(b[0]) * parseFloat(b[1]);
       if (vol > maxBidVol) { maxBidVol = vol; supportZone = parseFloat(b[0]); }
     }
 
-    // Encontrar zona de resistencia más fuerte (mayor volumen en asks)
     let maxAskVol = 0, resistanceZone = 0;
     for (const a of asks) {
       const vol = parseFloat(a[0]) * parseFloat(a[1]);
@@ -177,16 +167,14 @@ async function analyzeOrderBookZones(crypto, currentPrice) {
   }
 }
 
-// ── 3. TENDENCIA MACRO 24H ────────────────────────────
 function analyzeMacroTrend(change24h) {
-  if (change24h <= -5) return { bearish: true, strength: 20, desc: `📉 Mercado bajista fuerte (-${Math.abs(change24h).toFixed(1)}% 24h)` };
-  if (change24h <= -3) return { bearish: true, strength: 10, desc: `📉 Tendencia bajista (-${Math.abs(change24h).toFixed(1)}% 24h)` };
-  if (change24h >= 5) return { bullish: true, strength: 20, desc: `📈 Mercado alcista fuerte (+${change24h.toFixed(1)}% 24h)` };
-  if (change24h >= 3) return { bullish: true, strength: 10, desc: `📈 Tendencia alcista (+${change24h.toFixed(1)}% 24h)` };
-  return { neutral: true, strength: 0, desc: '' };
+  if (change24h <= -5) return { bearish: true, bullish: false, strength: 20, desc: `📉 Mercado bajista fuerte (-${Math.abs(change24h).toFixed(1)}% 24h)` };
+  if (change24h <= -3) return { bearish: true, bullish: false, strength: 10, desc: `📉 Tendencia bajista (-${Math.abs(change24h).toFixed(1)}% 24h)` };
+  if (change24h >= 5) return { bearish: false, bullish: true, strength: 20, desc: `📈 Mercado alcista fuerte (+${change24h.toFixed(1)}% 24h)` };
+  if (change24h >= 3) return { bearish: false, bullish: true, strength: 10, desc: `📈 Tendencia alcista (+${change24h.toFixed(1)}% 24h)` };
+  return { bearish: false, bullish: false, neutral: true, strength: 0, desc: '' };
 }
 
-// ── 4. VOLATILIDAD EXTREMA ────────────────────────────
 function detectExtremeVolatility(prices) {
   if (prices.length < 10) return { extreme: false, desc: '' };
   const recent = prices.slice(-10);
@@ -198,7 +186,6 @@ function detectExtremeVolatility(prices) {
   return { extreme: false, desc: '' };
 }
 
-// ── 5. CVD + BALLENAS CON MONTO ──────────────────────
 async function analyzeCVDAndWhales(crypto) {
   try {
     const symbol = BINANCE_SYMBOLS[crypto];
@@ -215,10 +202,10 @@ async function analyzeCVDAndWhales(crypto) {
       const vol = parseFloat(trade.qty) * parseFloat(trade.price);
       if (!trade.isBuyerMaker) {
         buyVolume += vol;
-        if (vol > 50000) bigBuys.push(vol); // Compras > $50K = ballena
+        if (vol > 50000) bigBuys.push(vol);
       } else {
         sellVolume += vol;
-        if (vol > 50000) bigSells.push(vol); // Ventas > $50K = ballena
+        if (vol > 50000) bigSells.push(vol);
       }
     }
 
@@ -250,7 +237,6 @@ async function analyzeCVDAndWhales(crypto) {
       whaleDesc = `🐋 ${bigSells.length} ballena(s) vendiendo: ${whaleAmount} USD`;
     }
 
-    // Volumen general
     if (volumeHistory[crypto].length >= 5) {
       const avgVol = volumeHistory[crypto].slice(-5).reduce((a, b) => a + b) / 5;
       const currentVol = buyVolume + sellVolume;
@@ -267,7 +253,6 @@ async function analyzeCVDAndWhales(crypto) {
   }
 }
 
-// ── 6. DIVERGENCIA RSI ────────────────────────────────
 function analyzeRSIDivergence(prices, rsiValues) {
   if (prices.length < 5 || rsiValues.length < 5) return { bullish: false, bearish: false, desc: '' };
   const priceDir = prices[prices.length-1] - prices[prices.length-5];
@@ -371,9 +356,9 @@ function getAccumulatedChange(crypto, currentPrice) {
 }
 
 function getSignalLevel(confidence) {
+  if (confidence >= 95) return { emoji: '🚀', nivel: 'PERFECTA' };
   if (confidence >= 90) return { emoji: '🔴', nivel: 'FUERTE' };
-  if (confidence >= 80) return { emoji: '🟠', nivel: 'BUENA' };
-  return { emoji: '🟡', nivel: 'MODERADA' }; // No se usa, solo 3 niveles desde 80%
+  return { emoji: '🟠', nivel: 'BUENA' };
 }
 
 async function analyzeCrypto(crypto) {
@@ -400,7 +385,6 @@ async function analyzeCrypto(crypto) {
   const momentum = calculateMomentum(prices);
   const accumulatedChange = getAccumulatedChange(crypto, currentPrice);
 
-  // Todos los análisis avanzados
   const dropCheck = await detectImmediateDrop(crypto);
   const obZones = await analyzeOrderBookZones(crypto, currentPrice);
   const macro = analyzeMacroTrend(change24h);
@@ -413,25 +397,13 @@ async function analyzeCrypto(crypto) {
   let buyReasons = [], sellReasons = [];
   let blockBuy = false;
 
-  // ── PROTECCIONES (bloquean señal de compra) ──
-  if (dropCheck.dropRisk) {
-    blockBuy = true;
-    sellReasons.push(`⚠️ Pared de venta detectada (${dropCheck.buyRatio}% compradores)`);
-  }
-  if (macro.bearish) {
-    blockBuy = true;
-    sellReasons.push(macro.desc);
-  }
-  if (volatility.extreme && accumulatedChange < 0) {
-    blockBuy = true;
-    sellReasons.push(volatility.desc);
-  }
-  if (news.negative >= 2) {
-    blockBuy = true;
-    sellReasons.push('📰 Noticias muy negativas - señal bloqueada');
-  }
+  // Protecciones
+  if (dropCheck.dropRisk) { blockBuy = true; sellReasons.push(`⚠️ Pared de venta detectada (${dropCheck.buyRatio}% compradores)`); }
+  if (macro.bearish) { blockBuy = true; sellReasons.push(macro.desc); }
+  if (volatility.extreme && accumulatedChange < 0) { blockBuy = true; sellReasons.push(volatility.desc); }
+  if (news.negative >= 2) { blockBuy = true; sellReasons.push('📰 Noticias muy negativas'); }
 
-  // ── PRECIO ACUMULATIVO ──
+  // Precio acumulativo
   if (accumulatedChange >= 3) { buyConfidence += 35; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado 🚀`); }
   else if (accumulatedChange >= 2) { buyConfidence += 25; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado`); }
   else if (accumulatedChange >= 1) { buyConfidence += 15; buyReasons.push(`Subió ${accumulatedChange.toFixed(2)}% acumulado`); }
@@ -442,11 +414,11 @@ async function analyzeCrypto(crypto) {
   else if (accumulatedChange <= -1) { sellConfidence += 15; sellReasons.push(`Bajó ${Math.abs(accumulatedChange).toFixed(2)}% acumulado`); }
   else if (accumulatedChange <= -0.3) { sellConfidence += 8; sellReasons.push(`Bajó ${Math.abs(accumulatedChange).toFixed(2)}% acumulado`); priceBase[crypto] = currentPrice; }
 
-  // ── ORDER BOOK ──
+  // Order Book
   if (obZones.buyStrength > 0) { buyConfidence += obZones.buyStrength; buyReasons.push(obZones.obDesc); }
   if (obZones.sellStrength > 0) { sellConfidence += obZones.sellStrength; sellReasons.push(obZones.obDesc); }
 
-  // ── CVD + BALLENAS ──
+  // CVD + Ballenas
   if (cvdWhale.buyStrength > 0) {
     buyConfidence += cvdWhale.buyStrength;
     if (cvdWhale.cvdDesc) buyReasons.push(cvdWhale.cvdDesc);
@@ -458,11 +430,11 @@ async function analyzeCrypto(crypto) {
     if (cvdWhale.whaleDesc) sellReasons.push(cvdWhale.whaleDesc);
   }
 
-  // ── DIVERGENCIA RSI ──
+  // Divergencia RSI
   if (rsiDiv.bullish) { buyConfidence += 25; buyReasons.push(rsiDiv.desc); }
   if (rsiDiv.bearish) { sellConfidence += 25; sellReasons.push(rsiDiv.desc); }
 
-  // ── RSI ──
+  // RSI
   if (rsi !== null) {
     if (rsi < 25) { buyConfidence += 25; buyReasons.push('RSI extremo de sobreventa'); }
     else if (rsi < 30) { buyConfidence += 20; buyReasons.push('RSI en sobreventa'); }
@@ -472,7 +444,7 @@ async function analyzeCrypto(crypto) {
     else if (rsi > 65) { sellConfidence += 10; sellReasons.push('RSI acercándose a sobrecompra'); }
   }
 
-  // ── BOLLINGER ──
+  // Bollinger
   if (bb) {
     if (currentPrice < bb.lower) { buyConfidence += 20; buyReasons.push('Precio bajo banda inferior'); }
     else if (currentPrice <= bb.lower * 1.02) { buyConfidence += 12; buyReasons.push('Precio cerca banda inferior'); }
@@ -480,30 +452,29 @@ async function analyzeCrypto(crypto) {
     else if (currentPrice >= bb.upper * 0.98) { sellConfidence += 12; sellReasons.push('Precio cerca banda superior'); }
   }
 
-  // ── EXTREMOS LOCALES ──
+  // Extremos
   if (extremes.localMin) { buyConfidence += 12; buyReasons.push('Mínimo local detectado'); }
   if (extremes.localMax) { sellConfidence += 12; sellReasons.push('Máximo local detectado'); }
 
-  // ── MEDIAS MÓVILES ──
+  // Medias móviles
   if (ma20 && ma50) {
     if (ma20 > ma50 && currentPrice > ma20) { buyConfidence += 12; buyReasons.push('Tendencia alcista (MA20 > MA50)'); }
     if (ma20 < ma50 && currentPrice < ma20) { sellConfidence += 12; sellReasons.push('Tendencia bajista (MA20 < MA50)'); }
   }
 
-  // ── MOMENTUM ──
+  // Momentum
   if (momentum !== null) {
     if (momentum < -3) { buyConfidence += 8; buyReasons.push('Momentum: rebote posible'); }
     if (momentum > 3) { sellConfidence += 8; sellReasons.push('Momentum alto (posible techo)'); }
   }
 
-  // ── TENDENCIA MACRO POSITIVA ──
+  // Macro positiva
   if (macro.bullish) { buyConfidence += macro.strength; buyReasons.push(macro.desc); }
 
-  // ── NOTICIAS POSITIVAS ──
+  // Noticias
   if (news.positive >= 2) { buyConfidence += 15; buyReasons.push(...news.headlines); }
   else if (news.positive >= 1) { buyConfidence += 8; buyReasons.push(...news.headlines); }
 
-  // Bloquear compra si hay riesgo
   if (blockBuy) buyConfidence = Math.min(buyConfidence, 40);
 
   return {
@@ -612,12 +583,14 @@ async function handleBotUpdates() {
           const [, crypto, price] = cb.data.split('_');
           userPositions[crypto] = { entry: parseFloat(price), timestamp: Date.now() };
           priceBase[crypto] = parseFloat(price);
-          pendingSignals[crypto] = { buyCount: 0, sellCount: 0 };
-          await sendTelegramMessage(`✅ <b>Compra registrada - ${crypto}</b>\n\n💰 Entrada: $${price}\n🛡️ Stop Loss: ${userStopLoss}%\n\nMonitoreo activo. Te avisaré cuando vender.`);
+          pendingSignals[crypto] = { buyCount: 0 };
+          await sendTelegramMessage(
+            `✅ <b>Compra registrada - ${crypto}</b>\n\n💰 Entrada: $${price}\n🛡️ Stop Loss: ${userStopLoss}%\n\nMonitoreo activo. Te avisaré cuando vender.`
+          );
         } else if (cb.data.startsWith('skip_')) {
           const crypto = cb.data.split('_')[1];
           priceBase[crypto] = null;
-          pendingSignals[crypto] = { buyCount: 0, sellCount: 0 };
+          pendingSignals[crypto] = { buyCount: 0 };
           await sendTelegramMessage(`❌ Señal de ${crypto} ignorada.`);
         } else if (cb.data.startsWith('sell_')) {
           const [, crypto, price] = cb.data.split('_');
@@ -625,7 +598,11 @@ async function handleBotUpdates() {
             const entry = userPositions[crypto].entry;
             const profit = ((parseFloat(price) - entry) / entry * 100).toFixed(2);
             const duracion = Math.round((Date.now() - userPositions[crypto].timestamp) / 60000);
-            executedTrades.push({ crypto, entry, exit: parseFloat(price), profit: parseFloat(profit), duracion, time: new Date().toLocaleString() });
+            executedTrades.push({
+              crypto, entry, exit: parseFloat(price),
+              profit: parseFloat(profit), duracion,
+              time: new Date().toLocaleString()
+            });
             await sendTelegramMessage(
               `✅ <b>Operación ejecutada - ${crypto}</b>\n\n🏁 Entrada: $${entry}\n🏆 Salida: $${price}\n${parseFloat(profit) >= 0 ? '🟢' : '🔴'} Ganancia: ${profit}%\n⏱️ ${duracion} minutos\n\nGuardado en /status ✅`
             );
@@ -666,7 +643,7 @@ async function runAnalysis() {
     const a = await analyzeCrypto(crypto);
     if (!a) continue;
 
-    const { buyConfidence, sellConfidence, rsi, currentPrice, buyReasons, sellReasons, accumulatedChange, obZones, cvdWhale, blockBuy, high24h, low24h } = a;
+    const { buyConfidence, sellConfidence, rsi, currentPrice, buyReasons, sellReasons, accumulatedChange, obZones, cvdWhale, blockBuy } = a;
 
     // Stop Loss con botones
     if (userPositions[crypto]) {
@@ -675,26 +652,25 @@ async function runAnalysis() {
       if (loss <= -userStopLoss) {
         await sendTelegramMessage(
           `🚨 <b>STOP LOSS - ${crypto}</b>\n\n💰 Precio: $${currentPrice}\n🏁 Entrada: $${entry}\n📉 Pérdida: ${loss.toFixed(2)}%\n\n⚠️ Considera vender para limitar pérdidas.`,
-          [[{ text: '✅ Sí, vendí', callback_data: `sell_${crypto}_${currentPrice}` }, { text: '❌ Sigo esperando', callback_data: `hold_${crypto}` }]]
+          [[
+            { text: '✅ Sí, vendí', callback_data: `sell_${crypto}_${currentPrice}` },
+            { text: '❌ Sigo esperando', callback_data: `hold_${crypto}` }
+          ]]
         );
       }
     }
 
-    // ── CONFIRMACIÓN: necesita 2 análisis seguidos con 80%+ ──
+    // COMPRA → 2 confirmaciones seguidas
     if (buyConfidence >= 80 && !userPositions[crypto] && !blockBuy) {
       pendingSignals[crypto].buyCount++;
-      pendingSignals[crypto].lastBuyConfidence = buyConfidence;
-      pendingSignals[crypto].sellCount = 0;
 
       if (pendingSignals[crypto].buyCount >= 2) {
         const level = getSignalLevel(buyConfidence);
         const reasons = buyReasons.map(r => `• ${r}`).join('\n');
-
-        // Calcular TP/SL sugeridos
         const suggestedTP = (parseFloat(currentPrice) * 1.03).toFixed(2);
         const suggestedSL = (parseFloat(currentPrice) * (1 - userStopLoss/100)).toFixed(2);
 
-        const message =
+        await sendTelegramMessage(
           `🟢 <b>SEÑAL DE COMPRA ${level.emoji} ${level.nivel} - ${crypto}</b>\n\n` +
           `💰 Precio: $${currentPrice}\n` +
           `📊 RSI: ${rsi}\n` +
@@ -706,12 +682,12 @@ async function runAnalysis() {
           `   ✅ TP sugerido: $${suggestedTP}\n` +
           `   ❌ SL sugerido: $${suggestedSL}\n\n` +
           `<b>Análisis:</b>\n${reasons}\n\n` +
-          `¿Compraste?`;
-        const buttons = [[
-          { text: '✅ Sí, compré', callback_data: `buy_${crypto}_${currentPrice}` },
-          { text: '❌ Pasamos', callback_data: `skip_${crypto}` }
-        ]];
-        await sendTelegramMessage(message, buttons);
+          `¿Compraste?`,
+          [[
+            { text: '✅ Sí, compré', callback_data: `buy_${crypto}_${currentPrice}` },
+            { text: '❌ Pasamos', callback_data: `skip_${crypto}` }
+          ]]
+        );
         signalHistory.push({ type: 'BUY', crypto, price: currentPrice, confidence: buyConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
         priceBase[crypto] = parseFloat(currentPrice);
         pendingSignals[crypto].buyCount = 0;
@@ -720,38 +696,31 @@ async function runAnalysis() {
       if (buyConfidence < 80) pendingSignals[crypto].buyCount = 0;
     }
 
+    // VENTA → señal inmediata sin esperar confirmación
     if (sellConfidence >= 80 && userPositions[crypto]) {
-      pendingSignals[crypto].sellCount++;
-      pendingSignals[crypto].buyCount = 0;
+      const level = getSignalLevel(sellConfidence);
+      const entry = userPositions[crypto].entry;
+      const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
+      const reasons = sellReasons.map(r => `• ${r}`).join('\n');
 
-      if (pendingSignals[crypto].sellCount >= 2) {
-        const level = getSignalLevel(sellConfidence);
-        const entry = userPositions[crypto].entry;
-        const profit = ((parseFloat(currentPrice) - entry) / entry * 100).toFixed(2);
-        const reasons = sellReasons.map(r => `• ${r}`).join('\n');
-
-        const message =
-          `🔴 <b>SEÑAL DE VENTA ${level.emoji} ${level.nivel} - ${crypto}</b>\n\n` +
-          `💰 Precio: $${currentPrice}\n` +
-          `📊 RSI: ${rsi}\n` +
-          `📉 Confianza: ${sellConfidence.toFixed(0)}%\n` +
-          `🏁 Entrada: $${entry}\n` +
-          `📊 Ganancia: ${profit}%\n\n` +
-          `<b>🎯 Zonas clave:</b>\n` +
-          `   🛡️ Soporte: $${obZones.supportZone}\n` +
-          `   🚧 Resistencia: $${obZones.resistanceZone}\n\n` +
-          `<b>Análisis:</b>\n${reasons}\n\n` +
-          `¿Vendiste?`;
-        const buttons = [[
+      await sendTelegramMessage(
+        `🔴 <b>SEÑAL DE VENTA ${level.emoji} ${level.nivel} - ${crypto}</b>\n\n` +
+        `💰 Precio: $${currentPrice}\n` +
+        `📊 RSI: ${rsi}\n` +
+        `📉 Confianza: ${sellConfidence.toFixed(0)}%\n` +
+        `🏁 Entrada: $${entry}\n` +
+        `📊 Ganancia: ${profit}%\n\n` +
+        `<b>🎯 Zonas clave:</b>\n` +
+        `   🛡️ Soporte: $${obZones.supportZone}\n` +
+        `   🚧 Resistencia: $${obZones.resistanceZone}\n\n` +
+        `<b>Análisis:</b>\n${reasons}\n\n` +
+        `¿Vendiste?`,
+        [[
           { text: '✅ Sí, vendí', callback_data: `sell_${crypto}_${currentPrice}` },
           { text: '❌ Sigo esperando', callback_data: `hold_${crypto}` }
-        ]];
-        await sendTelegramMessage(message, buttons);
-        signalHistory.push({ type: 'SELL', crypto, price: currentPrice, confidence: sellConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
-        pendingSignals[crypto].sellCount = 0;
-      }
-    } else {
-      if (sellConfidence < 80) pendingSignals[crypto].sellCount = 0;
+        ]]
+      );
+      signalHistory.push({ type: 'SELL', crypto, price: currentPrice, confidence: sellConfidence.toFixed(0), time: new Date().toLocaleTimeString() });
     }
   }
   console.log('✅ Análisis completado');
@@ -765,20 +734,17 @@ async function startBot() {
   } catch (e) { console.log('Webhook limpio'); }
 
   await sendTelegramMessage(
-    '🤖 <b>Bot Pro - Versión Definitiva!</b>\n\n' +
-    '✅ 6 protecciones anti-caída\n' +
-    '✅ Confirmación doble antes de señal\n' +
-    '✅ Ballenas con monto en USD\n' +
-    '✅ Zonas TP/SL del mercado\n' +
-    '✅ Order Book + CVD\n' +
-    '✅ Divergencia RSI\n' +
-    '✅ Noticias en tiempo real\n' +
+    '🤖 <b>Bot Pro Actualizado!</b>\n\n' +
+    '✅ Compra: 2 confirmaciones\n' +
+    '✅ Venta: señal INMEDIATA\n' +
     '✅ Stop Loss con botones\n' +
-    '✅ Solo señales 80%+\n\n' +
+    '✅ Ballenas con monto USD\n' +
+    '✅ Zonas TP/SL del mercado\n' +
+    '✅ 6 protecciones anti-caída\n\n' +
     'Niveles:\n' +
-    '🟡 80-89% Moderada\n' +
-    '🟠 90-99% Buena → Fuerte\n' +
-    '🔴 100% Perfecta\n\n' +
+    '🟠 80-89% Buena\n' +
+    '🔴 90-94% Fuerte\n' +
+    '🚀 95-100% Perfecta\n\n' +
     'Comandos:\n/status /precios /historial /stoploss'
   );
 
